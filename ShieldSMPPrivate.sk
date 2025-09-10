@@ -1,0 +1,409 @@
+############################################################
+# UltimateShields_Final.sk
+# All-in-one Shields + Dragon Sword Skript (vanilla Skript)
+# - Put in plugins/Skript/scripts/
+# - Reload with: /sk reload UltimateShields_Final
+############################################################
+
+options:
+  shieldchanger.spawn-chance: 20%          # percent chance to add head to chests
+  shieldchanger.cooldown: 15 seconds
+  cooldown.fire: 60 seconds
+  cooldown.push: 45 seconds
+  cooldown.lightning: 75 seconds
+  cooldown.heart: 90 seconds
+  cooldown.slowing: 60 seconds
+  cooldown.explosive: 90 seconds
+  cooldown.slowfall: 45 seconds
+  cooldown.poison: 60 seconds
+  cooldown.wither: 75 seconds
+  cooldown.shieldwall: 105 seconds
+  cooldown.dragonsword: 45 seconds
+
+# ---------------------------
+# Shield list (colored display names)
+# ---------------------------
+set {_shields::*} to "§cFire Shield", "§fPush Shield", "§eLightning Shield", "§bHeart Shield", "§5Slowing Shield", "§7Explosion Shield", "§9SlowFall Shield", "§aPoison Shield", "§8Wither Shield", "§6Shield Wall"
+
+# ---------------------------
+# Utilities / helper functions
+# ---------------------------
+# giveShield(p, displayName) - removes other shields and gives a named unbreakable shield, sets OG var
+function giveShield(p: player, display: text):
+    # remove any existing shield items (we keep OG variable updated to new)
+    loop all items in p's inventory:
+        if loop-item is diamond_shield:
+            if name of loop-item is in {_shields::*}:
+                remove loop-item
+    give p diamond_shield named display
+    # make last given shield unbreakable (best-effort)
+    set {_slot} to first slot of p's inventory that contains diamond_shield named display
+    if {_slot} is set:
+        set unbreakable of p's inventory slot {_slot} to true
+    # set player's OG shield identifier (persist by uuid)
+    set {ogshield.%uuid of p%} to display
+
+# cooldown storage uses expiry timestamps: {shieldCooldown::UUID::Ability} = <timestamp when ready>
+# helper to check cooldown and set expiry
+function tryUseAbility(p: player, ability: text, cd: timespan) :: boolean:
+    if {shieldCooldown::%uuid of p%::%ability%} is set:
+        if {shieldCooldown::%uuid of p%::%ability%} > now:
+            set {_remaining} to difference between {shieldCooldown::%uuid of p%::%ability%} and now
+            send "&cYou must wait &e%rounded {_remaining}%s &cbefore using &6%{ability}%&c again!" to p
+            stop function
+    # set expiry
+    set {shieldCooldown::%uuid of p%::%ability%} to now + cd
+    function tryUseAbility = true
+
+# helper to pick random shield name
+function randomShieldName() :: text:
+    return random element out of {_shields::*}
+
+# ---------------------------
+# Give OG shield on first join
+# ---------------------------
+on first join:
+    if {ogshield.%uuid of player%} is not set:
+        set {_rand} to randomShieldName()
+        giveShield(player, {_rand})
+        send "&aYou received your permanent shield: %{ogshield.%uuid of player%}%!" to player
+
+# on join: remove extra shields and restore OG if missing
+on join:
+    if {ogshield.%uuid of player%} is set:
+        # remove any shield that isn't the OG
+        loop all items in player's inventory:
+            if loop-item is diamond_shield:
+                if name of loop-item is in {_shields::*}:
+                    if name of loop-item != {ogshield.%uuid of player%}:
+                        remove loop-item
+        # ensure they have the OG shield
+        if player does not have diamond_shield named {ogshield.%uuid of player%}:
+            giveShield(player, {ogshield.%uuid of player%})
+            send "&aYour OG shield has been restored." to player
+
+# prevent picking up a shield if it's not their OG shield
+on pickup of diamond_shield:
+    if name of event-item is in {_shields::*}:
+        if {ogshield.%uuid of player%} is set:
+            if name of event-item != {ogshield.%uuid of player%}:
+                cancel event
+                send "&cYou already have your OG shield: %{ogshield.%uuid of player%}%!" to player
+
+# periodic safety: remove extra shields (keep only OG)
+every 10 seconds:
+    loop all players:
+        if {ogshield.%uuid of loop-player%} is set:
+            loop all items in loop-player's inventory:
+                if loop-item is diamond_shield:
+                    if name of loop-item is in {_shields::*}:
+                        if name of loop-item != {ogshield.%uuid of loop-player%}:
+                            remove loop-item
+
+# prevent shields from dropping on death; restore on respawn
+on death:
+    loop all drops:
+        if loop-item is diamond_shield:
+            if name of loop-item is in {_shields::*}:
+                remove loop-item
+
+on respawn:
+    if {ogshield.%uuid of player%} is set:
+        giveShield(player, {ogshield.%uuid of player%})
+
+# ---------------------------
+# Shield Changer head spawning in chests (Steve head)
+# ---------------------------
+on loot generate:
+    if "%event-block%" contains "chest":
+        chance of {@shieldchanger.spawn-chance}%:
+            set {_head} to skull of "MHF_Steve" named "&6Shield Changer" with lore "&7Use this to trade for a new shield", "&7Right-click the head to make it work"
+            add {_head} to event-block's inventory
+
+# Right-click a Shield Changer skull - random reroll, one-time use, 15s cooldown
+on rightclick holding skull:
+    if name of player's tool is "&6Shield Changer":
+        # check cooldown for using any Shield Changer (prevent spamming use of given head)
+        if {shieldchanger.cooldown::%uuid of player%} is set:
+            if {shieldchanger.cooldown::%uuid of player%} > now:
+                set {_rem} to difference between {shieldchanger.cooldown::%uuid of player%} and now
+                send "&cYou must wait &e%rounded {_rem}%s &cbefore using a Shield Changer again." to player
+                stop
+        # consume head (one-time)
+        remove player's tool
+        # remove current shield items
+        loop player's inventory:
+            if loop-item is diamond_shield:
+                if name of loop-item is in {_shields::*}:
+                    remove loop-item
+        # give random shield and set OG
+        set {_new} to randomShieldName()
+        giveShield(player, {_new})
+        send "&aThe Shield Changer gave you a &e%{_new}% &ashield!" to player
+        # set 15s personal cooldown for using Shield Changers
+        set {shieldchanger.cooldown::%uuid of player%} to now + {@shieldchanger.cooldown}
+
+# ---------------------------
+# Foot aura particles & passive effects (fire resist / slowfall)
+# ---------------------------
+every 5 ticks:
+    loop all players:
+        # Fire Shield in main or offhand grants short fire resistance
+        if player is holding diamond_shield named "§cFire Shield" or player's off hand item is diamond_shield named "§cFire Shield":
+            apply potion effect fire resistance 1 to loop-player for 12 seconds
+        # SlowFall shield grants short slow falling (we still cancel fall damage on damage event)
+        if player is holding diamond_shield named "§9SlowFall Shield" or player's off hand item is diamond_shield named "§9SlowFall Shield":
+            apply potion effect slow falling 1 to loop-player for 12 seconds
+
+# low-frequency foot particle aura (1s)
+every 1 second:
+    loop all players:
+        set {_s} to name of loop-player's tool
+        if {_s} is not set:
+            set {_s} to name of loop-player's off hand item
+        if {_s} = "§cFire Shield":
+            play effect flame at loop-player offset 0, -1, 0
+            play effect lava at loop-player offset 0, -1, 0
+        else if {_s} = "§fPush Shield":
+            play effect cloud at loop-player offset 0, -1, 0
+        else if {_s} = "§eLightning Shield":
+            play effect crit at loop-player offset 0, -1, 0
+        else if {_s} = "§bHeart Shield":
+            play effect heart at loop-player offset 0, -1, 0
+        else if {_s} = "§5Slowing Shield":
+            play effect witch at loop-player offset 0, -1, 0
+        else if {_s} = "§7Explosion Shield":
+            play effect explosion at loop-player offset 0, -1, 0
+        else if {_s} = "§9SlowFall Shield":
+            play effect bubble at loop-player offset 0, -1, 0
+        else if {_s} = "§aPoison Shield":
+            play effect slime at loop-player offset 0, -1, 0
+        else if {_s} = "§8Wither Shield":
+            play effect smoke at loop-player offset 0, -1, 0
+            play effect soul at loop-player offset 0, -1, 0
+        else if {_s} = "§6Shield Wall":
+            play effect barrier at loop-player offset 0, -1, 0
+
+# Cancel fall damage when holding SlowFall Shield (main or offhand)
+on damage of player:
+    if damage cause is fall:
+        if victim is holding diamond_shield named "§9SlowFall Shield" or victim's off hand item is diamond_shield named "§9SlowFall Shield":
+            cancel event
+
+# ---------------------------
+# Double-right-click activation (only when holding a shield)
+# ---------------------------
+on rightclick with diamond_shield:
+    if name of player's tool is in {_shields::*}:
+        if {lastclick.%uuid of player%} is not set:
+            set {lastclick.%uuid of player%} to now
+            stop
+        if difference between now and {lastclick.%uuid of player%} <= 10 ticks:
+            # run ability
+            set {_name} to name of player's tool
+            # execute ability using tryUseAbility helper (will send cooldown message if in use)
+            # mapping shield names -> ability and CD values:
+            if {_name} = "§cFire Shield":
+                if tryUseAbility(player, "Fire Shield", {@cooldown.fire}) is true:
+                    loop all entities in radius 5 around player:
+                        if loop-entity is not player and loop-entity is livingentity:
+                            damage loop-entity by 4
+                            set loop-entity on fire for 5 seconds
+                    play sound "entity.blaze.shoot" at player
+            else if {_name} = "§fPush Shield":
+                if tryUseAbility(player, "Push Shield", {@cooldown.push}) is true:
+                    loop all players in radius 6 around player:
+                        if loop-player != player:
+                            # push away
+                            set {_dx} to loop-player's x - player's x
+                            set {_dz} to loop-player's z - player's z
+                            set {_len} to abs(sqrt({_dx}*{_dx} + {_dz}*{_dz}))
+                            if {_len} <= 0:
+                                set {_len} to 0.001
+                            set {_vx} to {_dx}/{_len}*0.9
+                            set {_vz} to {_dz}/{_len}*0.9
+                            set {_vy} to 0.6
+                            set velocity of loop-player to vector({_vx}, {_vy}, {_vz})
+                    play sound "entity.generic.explode" at player
+            else if {_name} = "§eLightning Shield":
+                if tryUseAbility(player, "Lightning Shield", {@cooldown.lightning}) is true:
+                    loop 5 times:
+                        wait 1 second
+                        loop all entities in radius 6 around player:
+                            if loop-entity is not player and loop-entity is livingentity:
+                                strike lightning at location of loop-entity
+                                damage loop-entity by 4
+                    play sound "entity.lightning_bolt.thunder" at player
+            else if {_name} = "§bHeart Shield":
+                if tryUseAbility(player, "Heart Shield", {@cooldown.heart}) is true:
+                    apply potion effect absorption 2 to player for 8 seconds
+                    play sound "entity.player.levelup" at player
+            else if {_name} = "§5Slowing Shield":
+                if tryUseAbility(player, "Slowing Shield", {@cooldown.slowing}) is true:
+                    loop all entities in radius 6 around player:
+                        if loop-entity is not player and loop-entity is livingentity:
+                            apply potion effect slowness 3 to loop-entity for 5 seconds
+                            apply potion effect weakness 1 to loop-entity for 5 seconds
+                    play sound "entity.witch.hurt" at player
+            else if {_name} = "§7Explosion Shield":
+                if tryUseAbility(player, "Explosion Shield", {@cooldown.explosive}) is true:
+                    # visual explosion (no terrain damage)
+                    play effect explosion at player
+                    loop all entities in radius 5 around player:
+                        if loop-entity is not player and loop-entity is livingentity:
+                            damage loop-entity by 10
+                    play sound "entity.generic.explode" at player
+            else if {_name} = "§9SlowFall Shield":
+                if tryUseAbility(player, "SlowFall Shield", {@cooldown.slowfall}) is true:
+                    apply potion effect slow falling 1 to player for 10 seconds
+                    play sound "entity.elytra.flying" at player
+            else if {_name} = "§aPoison Shield":
+                if tryUseAbility(player, "Poison Shield", {@cooldown.poison}) is true:
+                    loop all entities in radius 6 around player:
+                        if loop-entity is not player and loop-entity is livingentity:
+                            apply potion effect poison 3 to loop-entity for 5 seconds
+                            apply potion effect nausea 1 to loop-entity for 5 seconds
+                    play sound "entity.witch.ambient" at player
+            else if {_name} = "§8Wither Shield":
+                if tryUseAbility(player, "Wither Shield", {@cooldown.wither}) is true:
+                    loop all entities in radius 6 around player:
+                        if loop-entity is not player and loop-entity is livingentity:
+                            apply potion effect wither 3 to loop-entity for 4 seconds
+                    play sound "entity.skeleton.ambient" at player
+            else if {_name} = "§6Shield Wall":
+                if tryUseAbility(player, "Shield Wall", {@cooldown.shieldwall}) is true:
+                    # display barrier particles in a 16x16 square centered on player (visual)
+                    set {_loc} to location of player
+                    loop {_x} from -8 to 8:
+                        spawn particle barrier at {_loc} offset {_x}, 1, -8
+                        spawn particle barrier at {_loc} offset {_x}, 1, 8
+                    loop {_z} from -7 to 7:
+                        spawn particle barrier at {_loc} offset -8, 1, {_z}
+                        spawn particle barrier at {_loc} offset 8, 1, {_z}
+                    play sound "block.anvil.land" at player
+            # clear lastclick
+            delete {lastclick.%uuid of player%}
+        else:
+            # not a quick double-click: update timestamp
+            set {lastclick.%uuid of player%} to now
+
+# ---------------------------
+# Passive on-hit procs (main or offhand)
+# Lightning 10%, Heart 5%, Shield Wall 15%
+# ---------------------------
+on damage of entity:
+    attacker is a player
+    set {_att} to attacker
+    # find shield in main hand or off hand
+    set {_held} to attacker's tool
+    if {_held} is air:
+        set {_held} to attacker's off hand item
+    if {_held} is diamond_shield:
+        set {_name} to name of {_held}
+        # Lightning Shield 10% chance
+        if {_name} = "§eLightning Shield":
+            chance of 10%:
+                strike lightning at victim
+                damage victim by 4
+                send "&e⚡ Your Lightning Shield strikes with fury!" to attacker
+        # Heart Shield 5% chance -> Regen IV 5s
+        if {_name} = "§bHeart Shield":
+            chance of 5%:
+                apply potion effect regeneration 4 to attacker for 5 seconds
+                send "&d❤ Your Heart Shield fills you with life!" to attacker
+        # Shield Wall 15% chance -> freeze for 2s (stop mid-air; no float)
+        if {_name} = "§6Shield Wall":
+            chance of 15%:
+                set velocity of victim to vector(0,0,0)
+                apply potion effect slowness 255 to victim for 2 seconds
+                send "&b❄ Your Shield Wall freezes your foe in place!" to attacker
+                send "&c❄ You’ve been frozen solid!" to victim
+
+# ---------------------------
+# Dragon Sword (right-click uses Dragon's Breath & fires small fireball)
+# ---------------------------
+# Command for OPs to get dragon sword
+command /givedragonsword:
+    permission: shields.admin
+    trigger:
+        give player netherite_sword named "§5Dragon Sword" with lore "&5Consumes Dragon's Breath to fire blasts."
+        set unbreakable of player's tool to true
+        send "&5You received the Dragon Sword." to player
+
+on rightclick with netherite_sword:
+    if name of player's tool is "§5Dragon Sword":
+        # cooldown check
+        if {dragonsword.cooldown::%uuid of player%} is set:
+            if {dragonsword.cooldown::%uuid of player%} > now:
+                set {_rem} to difference between {dragonsword.cooldown::%uuid of player%} and now
+                send "&cThe Dragon Sword is recharging! Wait &e%rounded {_rem}%s&c." to player
+                stop
+        # check for dragon's breath in inventory
+        if player has 1 of dragon_breath:
+            remove 1 of dragon_breath from player
+            # launch a small fireball outward
+            launch projectile small_fireball from player at speed 1
+            set {dragonsword.cooldown::%uuid of player%} to now + {@cooldown.dragonsword}
+            send "&5🔥 You unleash dragon fire!" to player
+        else:
+            send "&cYou need Dragon's Breath to fire this weapon!" to player
+
+# projectile hit handling for fireball: damage entities, prevent terrain damage
+on projectile hit:
+    if projectile is small_fireball or projectile is fireball:
+        set {_loc} to location of projectile
+        # damage in radius (direct vs splash)
+        loop all entities in radius 4 around {_loc}:
+            if loop-entity is livingentity and loop-entity is not projectile's shooter:
+                if distance between loop-entity and {_loc} <= 1.5:
+                    damage loop-entity by 16
+                else:
+                    damage loop-entity by 10
+        play effect dragon_breath at {_loc}
+        play sound "entity.ender_dragon.growl" at {_loc}
+        remove projectile
+
+# Dragon Sword crafting (D E D / N S N / D N D)
+on load:
+    register new shaped recipe for netherite_sword named "§5Dragon Sword":
+        recipe:
+        - diamond_block, dragon_egg, diamond_block
+        - netherite_ingot, netherite_sword, netherite_ingot
+        - diamond_block, netherite_ingot, diamond_block
+        result: netherite_sword named "§5Dragon Sword"
+
+on craft:
+    if result is netherite_sword named "§5Dragon Sword":
+        set unbreakable of result to true
+        set lore of result to "&5Forged with the Dragon’s essence. Consumes Dragon Breath to fire blasts."
+
+# ---------------------------
+# Admin commands: setshield and givetrader
+# ---------------------------
+command /setshield <player> <text>:
+    permission: shields.admin
+    permission message: "&cYou need shields.admin to use this."
+    trigger:
+        if arg-2 is not set:
+            send "&cUsage: /setshield <player> <partial shield name>" to player
+            stop
+        set {_needle} to lower(arg-2)
+        set {_found} to false
+        loop {_shields::*}:
+            if lower(loop-value) contains {_needle}:
+                giveShield(arg-1, loop-value)
+                send "&aSet %{arg-1}% shield to %loop-value%." to player
+                send "&aYou now have the shield: %loop-value%." to arg-1
+                set {_found} to true
+                stop loop
+        if {_found} is false:
+            send "&cCould not find shield matching '%{_needle}%'. Options: %{_shields::*}%"
+
+command /givetrader <player>:
+    permission: shields.admin
+    permission message: "&cYou need shields.admin to use this."
+    trigger:
+        give arg-1 skull of "MHF_Steve" named "&6Shield Changer" with lore "&7Use this to trade for a new shield", "&7Right-click the head to make it work"
+        send "&aGave a Shield Changer head to %arg-1%."
+
+# End of script
